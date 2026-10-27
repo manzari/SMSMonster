@@ -1,0 +1,39 @@
+name: SMS Monster
+version: "0.1.0"
+slug: smsmonster
+description: SMS gateway for SIM800C USB modems (send/receive SMS, webhooks, REST API)
+url: https://github.com/CHANGEME/SMSMonster
+arch:
+  - aarch64
+  - armv7
+  - armhf
+  - amd64
+startup: services
+boot: auto
+init: false
+uart: true
+udev: true
+ingress: true
+ingress_port: 8080
+panel_icon: mdi:message-text
+panel_title: SMS Monster
+ports:
+  8080/tcp: null
+ports_description:
+  8080/tcp: Direct HTTP access to the web UI / REST API (optional, ingress works without it)
+options:
+  devices: auto
+  baudrates: "115200,9600"
+  sim_pin: ""
+  api_token: ""
+  log_level: info
+  hangup_calls: true
+  delivery_reports: false
+schema:
+  devices: str
+  baudrates: str
+  sim_pin: password?
+  api_token: password?
+  log_level: list(debug|info|warning|error)
+  hangup_calls: bool
+  delivery_reports: bool

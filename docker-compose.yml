@@ -1,0 +1,24 @@
+services:
+  smsmonster:
+    build: .
+    image: smsmonster:latest
+    container_name: smsmonster
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/data
+      - /dev/serial/by-id:/dev/serial/by-id:ro   # stable names, optional
+    # Simplest: map each modem explicitly. Hot-plug friendly alternative below.
+    devices:
+      - /dev/ttyUSB0:/dev/ttyUSB0
+      # - /dev/ttyUSB1:/dev/ttyUSB1
+    # For hot-plug of any USB serial adapter instead of the `devices:` list:
+    # device_cgroup_rules: ["c 188:* rmw", "c 166:* rmw"]   # 188 = ttyUSB*, 166 = ttyACM*
+    # volumes: [ "/dev:/dev" ]
+    environment:
+      SMSMONSTER_DEVICES: auto            # or comma separated: /dev/ttyUSB0,/dev/ttyUSB1
+      SMSMONSTER_BAUDRATES: "115200,9600"
+      SMSMONSTER_SIM_PIN: ""
+      SMSMONSTER_API_TOKEN: ""            # set to require Bearer/X-API-Key auth on /api/*
+      SMSMONSTER_LOG_LEVEL: info
