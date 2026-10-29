@@ -20,5 +20,5 @@ services:
       SMSMONSTER_DEVICES: auto            # or comma separated: /dev/ttyUSB0,/dev/ttyUSB1
       SMSMONSTER_BAUDRATES: "115200,9600"
       SMSMONSTER_SIM_PIN: ""
-      SMSMONSTER_API_TOKEN: ""            # set to require Bearer/X-API-Key auth on /api/*
+      SMSMONSTER_API_TOKEN: ""            # REQUIRED unless only localhost can reach port 8080: Bearer/X-API-Key auth on /api/*
       SMSMONSTER_LOG_LEVEL: info

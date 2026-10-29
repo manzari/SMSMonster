@@ -38,7 +38,7 @@ Data (SQLite) lives in `./data`.
 | `SMSMONSTER_DEVICES` | `auto` | `auto` = scan `/dev/serial/by-id`, `/dev/ttyUSB*`, `/dev/ttyACM*`; or comma separated paths / pyserial URLs (`socket://host:5555`, `rfc2217://host:port`) |
 | `SMSMONSTER_BAUDRATES` | `115200,9600,57600,38400` | Baud rates to probe |
 | `SMSMONSTER_SIM_PIN` | | PIN to enter when the SIM asks for it |
-| `SMSMONSTER_API_TOKEN` | | If set, `/api/*` needs `Authorization: Bearer <token>` (or `X-API-Key`) |
+| `SMSMONSTER_API_TOKEN` | | If set, `/api/*` needs `Authorization: Bearer <token>` (or `X-API-Key`; `?token=` only on `/api/events`). **Set it whenever port 8080 is reachable from anything but localhost.** |
 | `SMSMONSTER_PORT` / `SMSMONSTER_HOST` | `8080` / `0.0.0.0` | Listen address |
 | `SMSMONSTER_DATA_DIR` | `./data` (`/data` in Docker) | SQLite location |
 | `SMSMONSTER_LOG_LEVEL` | `info` | `debug` logs every AT exchange |
@@ -49,7 +49,8 @@ Data (SQLite) lives in `./data`.
 | `SMSMONSTER_STATUS_INTERVAL` | `30` | Seconds between signal/registration polls |
 | `SMSMONSTER_SWEEP_INTERVAL` | `120` | Seconds between SIM storage sweeps (catches missed notifications) |
 | `SMSMONSTER_PART_TIMEOUT` | `600` | Seconds to wait for missing parts of a long SMS before storing it incomplete |
-| `SMSMONSTER_TRUST_INGRESS` | `true` | Let Home Assistant Ingress requests bypass the API token |
+| `SMSMONSTER_MAX_INCOMING_PER_MIN` | `120` | Per-modem cap on stored incoming SMS/calls per minute; excess stays on the SIM until a later sweep (`0` = unlimited) |
+| `SMSMONSTER_TRUST_INGRESS` | `false` | Let requests whose TCP peer is the Home Assistant Supervisor (`172.30.32.2`) bypass the API token. The add-on sets this; leave it off elsewhere |
 
 ### Modem on another machine (or Docker Desktop)
 
@@ -72,9 +73,22 @@ After changing the application run `scripts/sync-addon.sh` (bumps the add-on ver
 
 Options, `rest_command` and webhook-trigger examples are in `smsmonster-addon/DOCS.md`.
 
+## Security notes
+
+- The API token is the only access boundary. Anyone holding it has **full modem control**: the AT console can dial
+  numbers, change the SIM PIN or reset the modem, and the message list exposes every SMS (2FA codes included).
+- Without a token the API is open to everyone who can reach the port; a warning is logged at start-up.
+- POST/PATCH bodies must be sent with `Content-Type: application/json` (this also blocks cross-site form posts).
+- Everything the modem sends is treated as untrusted input: lines and responses are size-capped, identity strings
+  are sanitised, incoming traffic is rate limited per modem and a misbehaving modem is disconnected, never trusted.
+- `socket://` / `rfc2217://` modems are plain TCP. Only bridge over a network you trust; an attacker on that path
+  is an evil modem.
+- Webhook URLs are called from inside the container (use this to reach Home Assistant, but it also means any
+  internal URL is reachable for whoever manages webhooks). Webhook secrets are stored in plain text in the SQLite file.
+
 ## REST API
 
-All endpoints return JSON. With a token configured send `Authorization: Bearer <token>`.
+All endpoints return JSON. With a token configured send `Authorization: Bearer <token>` and, for bodies, `Content-Type: application/json`.
 
 | Method & path | Purpose |
 |---|---|

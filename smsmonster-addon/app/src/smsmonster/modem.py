@@ -8,6 +8,7 @@ import queue
 import re
 import threading
 import time
+from collections import deque
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Callable
@@ -28,6 +29,20 @@ CMS_ERRORS = {300: "ME failure", 301: "SMS service of ME reserved", 302: "operat
               313: "SIM failure", 314: "SIM busy", 321: "invalid memory index", 322: "SIM memory full", 330: "SMSC address unknown",
               331: "no network service", 332: "network timeout", 500: "unknown error"}
 REG_STATES = {0: "not_registered", 1: "home", 2: "searching", 3: "denied", 4: "unknown", 5: "roaming"}
+# Everything the modem sends is untrusted input: bound it.
+MAX_LINE_BYTES = 64 * 1024
+MAX_RESPONSE_BYTES = 256 * 1024
+MAX_RESPONSE_LINES = 4096
+MAX_PENDING_READS = 64
+_CTRL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
+def _clean(s: str, limit: int = 64) -> str:
+    return _CTRL.sub("", s)[:limit].strip()
+
+
+def _log_safe(s: str, limit: int = 120) -> str:
+    return _CTRL.sub(lambda m: f"\\x{ord(m.group()):02x}", s[:limit])
 
 
 class ModemError(Exception):
@@ -44,6 +59,10 @@ class ModemGone(ModemError):
 
 class SimNotReady(ModemError):
     """SIM missing/locked: port stays open, init is retried periodically."""
+
+
+class SendRejected(ModemError):
+    """Message can never be sent (bad number/text); not retried."""
 
 
 @dataclass
@@ -102,6 +121,8 @@ class ModemWorker(threading.Thread):
         self._last_cusd: str | None = None
         self._reconnect = False
         self._last_call: tuple[str, float] | None = None
+        self._incoming: deque[float] = deque()
+        self._throttled = False
 
     # ---------------- public API (any thread) ----------------
     def stop(self) -> None:
@@ -165,7 +186,9 @@ class ModemWorker(threading.Thread):
         line = self._readline(0.2)
         if line:
             self._handle_urc(line)
-        while self._pending_read:
+        for _ in range(8):  # bounded so a URC flood cannot starve jobs/stop
+            if not self._pending_read:
+                break
             self._read_and_delete(self._pending_read.pop(0))
         try:
             fn, fut = self._jobs.get_nowait()
@@ -228,16 +251,16 @@ class ModemWorker(threading.Thread):
         self._set_status("initializing")
         self._command("ATE0")
         self._command("AT+CMEE=1")
-        st.model = self._first_line(self._command("AT+CGMM"))
-        st.firmware = self._first_line(self._command("AT+CGMR")).replace("Revision:", "").strip()
+        st.model = _clean(self._first_line(self._command("AT+CGMM")))
+        st.firmware = _clean(self._first_line(self._command("AT+CGMR")).replace("Revision:", ""))
         imei = self._first_line(self._command("AT+CGSN"))
-        if not imei.isdigit():
-            raise ModemError(f"unexpected IMEI response: {imei!r}")
+        if not (imei.isascii() and imei.isdigit() and 8 <= len(imei) <= 20):
+            raise ModemError(f"unexpected IMEI response: {_log_safe(imei, 40)!r}")
         st.imei = imei
         st.id = imei
         self._ensure_sim_ready()
-        st.imsi = self._first_line(self._command("AT+CIMI"))
-        st.iccid = self._first_line(self._command("AT+CCID", ok_on_error=True)).strip('"')
+        st.imsi = _clean(self._first_line(self._command("AT+CIMI")))
+        st.iccid = _clean(self._first_line(self._command("AT+CCID", ok_on_error=True)).strip('"'))
         self._command("AT+CMGF=0")
         self._command("AT+CSCS=\"GSM\"", ok_on_error=True)
         cnmi = "2,1,0,1,0" if self.settings.delivery_reports else "2,1,0,0,0"
@@ -327,7 +350,7 @@ class ModemWorker(threading.Thread):
         if st.registration in ("home", "roaming"):
             cops = self._first_line(self._command("AT+COPS?", ok_on_error=True))
             m = re.search(r'"([^"]*)"', cops)
-            st.operator = m.group(1) if m else None
+            st.operator = _clean(m.group(1)) if m else None
         else:
             st.operator = None
         st.last_seen = now_iso()
@@ -349,17 +372,33 @@ class ModemWorker(threading.Thread):
     def _is_urc(self, line: str) -> bool:
         return line.startswith(URC_PREFIXES)
 
+    def _take_budget(self) -> bool:
+        """Rate-limit modem-driven work; excess SMS stay on the SIM for a later sweep."""
+        limit = self.settings.max_incoming_per_min
+        if limit <= 0:
+            return True
+        now = time.monotonic()
+        while self._incoming and now - self._incoming[0] > 60:
+            self._incoming.popleft()
+        if len(self._incoming) >= limit:
+            if not self._throttled:
+                self._throttled = True
+                self._set_error(f"more than {limit} incoming events per minute, throttling")
+            return False
+        self._throttled = False
+        self._incoming.append(now)
+        return True
+
     def _handle_urc(self, line: str) -> None:
-        if line.startswith("+CMTI:"):
+        if line.startswith(("+CMTI:", "+CDSI:")):
             try:
-                self._pending_read.append(int(line.split(",")[-1]))
+                index = int(line.split(",")[-1])
             except ValueError:
-                log.warning("[%s] bad CMTI: %s", self.state.id, line)
-        elif line.startswith("+CDSI:"):
-            try:
-                self._pending_read.append(int(line.split(",")[-1]))
-            except ValueError:
-                pass
+                log.warning("[%s] bad URC: %s", self.state.id, _log_safe(line))
+                return
+            if index in self._pending_read or len(self._pending_read) >= MAX_PENDING_READS or not self._take_budget():
+                return
+            self._pending_read.append(index)
         elif line.startswith("+CLIP:"):
             m = re.match(r'\+CLIP:\s*"([^"]*)"', line)
             number = m.group(1) if m else ""
@@ -375,16 +414,17 @@ class ModemWorker(threading.Thread):
         elif line.startswith("+CPIN:") and "READY" not in line and self.ready:
             raise ModemError(f"SIM state changed: {line}")
         else:
-            log.debug("[%s] urc: %s", self.state.id, line)
+            log.debug("[%s] urc: %s", self.state.id, _log_safe(line))
 
     def _on_call(self, number: str) -> None:
         if self._last_call and time.monotonic() - self._last_call[1] < 10 and self._last_call[0] == number:
             return
         self._last_call = (number, time.monotonic())
-        log.info("[%s] incoming call from %s", self.state.id, number or "unknown")
-        msg = self.db.insert_message(kind="call", direction="in", modem_id=self.state.id, number=number or "unknown",
-                                     text="", status="received", received_at=now_iso())
-        self.bus.publish("call.received", msg)
+        if self._take_budget():
+            log.info("[%s] incoming call from %s", self.state.id, _log_safe(number) or "unknown")
+            msg = self.db.insert_message(kind="call", direction="in", modem_id=self.state.id, number=number or "unknown",
+                                         text="", status="received", received_at=now_iso())
+            self.bus.publish("call.received", msg)
         if self.settings.hangup_calls:
             try:
                 self._command("ATH", ok_on_error=True)
@@ -393,12 +433,12 @@ class ModemWorker(threading.Thread):
 
     # ---------------- receiving ----------------
     def _read_and_delete(self, index: int) -> None:
-        lines = self._command(f"AT+CMGR={index}", timeout=10)
+        lines, err = self._command(f"AT+CMGR={index}", timeout=10, ok_on_error=True, return_error=True)
         pdu_hex = next((l for l in lines if not l.startswith("+CMGR") and re.fullmatch(r"[0-9A-Fa-f]+", l)), None)
         if pdu_hex:
             self._process_pdu(pdu_hex)
         else:
-            log.warning("[%s] CMGR %d returned no PDU: %s", self.state.id, index, lines)
+            log.warning("[%s] CMGR %d returned no PDU: %s", self.state.id, index, _log_safe(err or str(lines)))
         if self.settings.delete_from_sim:
             self._command(f"AT+CMGD={index}", ok_on_error=True)
 
@@ -412,6 +452,8 @@ class ModemWorker(threading.Thread):
                 except ValueError:
                     index = None
             elif index is not None and re.fullmatch(r"[0-9A-Fa-f]+", line):
+                if not self._take_budget():
+                    break
                 self._process_pdu(line)
                 if self.settings.delete_from_sim:
                     self._command(f"AT+CMGD={index}", ok_on_error=True)
@@ -421,8 +463,8 @@ class ModemWorker(threading.Thread):
         try:
             sms = pdulib.decode_pdu(pdu_hex)
         except pdulib.PduError as e:
-            log.warning("[%s] undecodable PDU (%s): %s", self.state.id, e, pdu_hex)
-            self._store_incoming("unknown", f"[undecodable PDU] {pdu_hex}", None)
+            log.warning("[%s] undecodable PDU (%s): %s", self.state.id, e, _log_safe(pdu_hex))
+            self._store_incoming("unknown", f"[undecodable PDU] {pdu_hex[:1024]}", None)
             return
         if sms.kind == "status_report":
             self._on_status_report(sms)
@@ -454,7 +496,7 @@ class ModemWorker(threading.Thread):
         msg = self.db.insert_message(direction="in", modem_id=self.state.id, number=number, text=text, status="received",
                                      received_at=received_at or now_iso(), parts_total=parts_total, parts_received=parts_received)
         self.state.counters["received"] += 1
-        log.info("[%s] SMS from %s: %s", self.state.id, number, text[:80])
+        log.info("[%s] SMS from %s: %s", self.state.id, _log_safe(number), _log_safe(text, 80))
         self.bus.publish("message.received", msg)
 
     def _on_status_report(self, sms: pdulib.DecodedSms) -> None:
@@ -478,7 +520,7 @@ class ModemWorker(threading.Thread):
             ref = self.send_sms(msg["number"], msg["text"])
         except ModemError as e:
             err = str(e)
-            if msg["attempts"] < self.settings.send_retries:
+            if msg["attempts"] < self.settings.send_retries and not isinstance(e, SendRejected):
                 upd = self.db.update_message(msg["id"], status="queued", error=err)
                 self._next_send = time.monotonic() + 10
                 log.warning("[%s] send to %s failed (attempt %d): %s", self.state.id, msg["number"], msg["attempts"], err)
@@ -501,8 +543,8 @@ class ModemWorker(threading.Thread):
         """Send (possibly multipart) SMS synchronously on the worker thread; returns last message reference."""
         try:
             parts = pdulib.encode_submit(number, text, request_status=self.settings.delivery_reports)
-        except pdulib.PduError as e:
-            raise ModemError(str(e))
+        except (pdulib.PduError, ValueError, UnicodeError) as e:
+            raise SendRejected(str(e))
         ref = None
         for part in parts:
             self._write(f"AT+CMGS={part.tpdu_len}\r".encode())
@@ -530,6 +572,8 @@ class ModemWorker(threading.Thread):
         self._set_status("connecting")
 
     def job_ussd(self, code: str, timeout: float = 30) -> dict:
+        if not re.fullmatch(r"[0-9*#+]{1,32}", code):
+            raise ModemError("invalid USSD code")
         self._last_cusd = None
         self._command(f'AT+CUSD=1,"{code}",15', timeout=10)
         deadline = time.monotonic() + timeout
@@ -565,6 +609,9 @@ class ModemWorker(threading.Thread):
                 if line:
                     return line.decode("latin-1")
                 continue
+            if len(self._buf) > MAX_LINE_BYTES:
+                self._buf = b""
+                raise ModemError("modem sent an overlong line")
             if self._buf.strip() == b">":
                 self._buf = b""
                 return ">"
@@ -599,6 +646,7 @@ class ModemWorker(threading.Thread):
             self._write(cmd.encode() + b"\r")
         lines: list[str] = []
         error: str | None = None
+        size = 0
         deadline = time.monotonic() + timeout
         while True:
             remaining = deadline - time.monotonic()
@@ -617,6 +665,9 @@ class ModemWorker(threading.Thread):
             if self._is_urc(line) and not (cmd and line.startswith("+CPIN:") and cmd.startswith("AT+CPIN")):
                 self._handle_urc(line)
                 continue
+            size += len(line)
+            if size > MAX_RESPONSE_BYTES or len(lines) >= MAX_RESPONSE_LINES:
+                raise ModemError(f"oversized response to {cmd or 'data'}")
             lines.append(line)
         if error and not ok_on_error:
             raise ModemError(f"{cmd}: {error}")
@@ -631,7 +682,7 @@ class ModemWorker(threading.Thread):
         for l in lines:
             m = re.match(r'\+CNUM:\s*"[^"]*",\s*"([^"]+)"', l)
             if m:
-                return m.group(1)
+                return _clean(m.group(1), 32)
         return None
 
 

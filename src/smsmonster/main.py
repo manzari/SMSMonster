@@ -29,7 +29,8 @@ def build_app():
 def main() -> None:
     app = build_app()
     s = app.state.settings
-    uvicorn.run(app, host=s.host, port=s.port, log_level=s.log_level.lower(), proxy_headers=True, forwarded_allow_ips="*")
+    # proxy_headers must stay off: the Ingress check trusts the real TCP peer, not X-Forwarded-For.
+    uvicorn.run(app, host=s.host, port=s.port, log_level=s.log_level.lower(), proxy_headers=False)
 
 
 if __name__ == "__main__":

@@ -92,8 +92,8 @@ def encode_address(number: str) -> bytes:
     if number.startswith("+"):
         toa = 0x91
         number = number[1:]
-    if not number.isdigit():
-        raise PduError(f"invalid number: {number!r}")
+    if not (number.isascii() and number.isdigit() and len(number) <= 20):
+        raise PduError(f"invalid number: {number[:32]!r}")
     digits = number + ("F" if len(number) % 2 else "")
     raw = bytes(int(digits[i + 1] + digits[i], 16) for i in range(0, len(digits), 2))
     return bytes([len(number), toa]) + raw
@@ -274,7 +274,10 @@ def encode_submit(number: str, text: str, ref: int | None = None, request_status
             chunks = _split_septets(septets, 153)
     else:
         dcs = 0x08
-        data = text.encode("utf-16-be")
+        try:
+            data = text.encode("utf-16-be")
+        except UnicodeEncodeError as e:
+            raise PduError("text contains invalid characters") from e
         chunks = [data] if len(data) <= 140 else _split_ucs2(data, 134)
     total = len(chunks)
     multipart = total > 1

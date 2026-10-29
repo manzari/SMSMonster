@@ -23,7 +23,7 @@ class Settings:
     baudrates: list[int] = field(default_factory=lambda: [int(b) for b in _env("BAUDRATES", "115200,9600,57600,38400").split(",") if b.strip()])
     sim_pin: str = field(default_factory=lambda: _env("SIM_PIN", ""))
     api_token: str = field(default_factory=lambda: _env("API_TOKEN", ""))
-    trust_ingress: bool = field(default_factory=lambda: _bool("TRUST_INGRESS", True))
+    trust_ingress: bool = field(default_factory=lambda: _bool("TRUST_INGRESS", False))
     log_level: str = field(default_factory=lambda: _env("LOG_LEVEL", "info"))
     status_interval: float = field(default_factory=lambda: float(_env("STATUS_INTERVAL", "30")))
     sweep_interval: float = field(default_factory=lambda: float(_env("SWEEP_INTERVAL", "120")))
@@ -33,6 +33,7 @@ class Settings:
     delete_from_sim: bool = field(default_factory=lambda: _bool("DELETE_FROM_SIM", True))
     delivery_reports: bool = field(default_factory=lambda: _bool("DELIVERY_REPORTS", False))
     part_timeout: float = field(default_factory=lambda: float(_env("PART_TIMEOUT", "600")))
+    max_incoming_per_min: int = field(default_factory=lambda: int(_env("MAX_INCOMING_PER_MIN", "120")))
 
     @property
     def db_path(self) -> str:

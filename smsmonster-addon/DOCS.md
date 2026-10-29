@@ -15,7 +15,7 @@ Turns one or more SIM800C USB modems plugged into your Home Assistant host into 
 | `devices` | `auto` | `auto` scans `/dev/serial/by-id`, `/dev/ttyUSB*`, `/dev/ttyACM*`. Or a comma separated list of device paths. |
 | `baudrates` | `115200,9600` | Baud rates tried when probing a modem. |
 | `sim_pin` | | PIN entered automatically if the SIM asks for one. |
-| `api_token` | | When set, `/api/*` requires `Authorization: Bearer <token>` (Ingress is exempt). Set this if you expose port 8080. |
+| `api_token` | | When set, `/api/*` requires `Authorization: Bearer <token>` (Ingress is exempt). **Set this if you expose port 8080**; anyone with the token or open port can read all SMS and fully control the modem. |
 | `log_level` | `info` | Log verbosity. |
 | `hangup_calls` | `true` | Reject incoming calls after logging them. |
 | `delivery_reports` | `false` | Request SMS delivery reports (status becomes `delivered`). |
