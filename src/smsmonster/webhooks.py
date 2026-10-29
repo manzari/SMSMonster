@@ -13,12 +13,14 @@ from .db import Database
 
 log = logging.getLogger(__name__)
 WEBHOOK_EVENTS = ("message.received", "message.sent", "message.failed", "message.updated", "call.received", "modem.updated", "modem.removed")
+MAX_PENDING = 200
 
 
 class WebhookDispatcher:
     def __init__(self, db: Database) -> None:
         self.db = db
         self._client = httpx.AsyncClient(timeout=15)
+        self._pending = 0
 
     async def close(self) -> None:
         await self._client.aclose()
@@ -26,7 +28,17 @@ class WebhookDispatcher:
     def __call__(self, event: str, data: dict) -> None:
         hooks = [h for h in self.db.list_webhooks() if h["enabled"] and (event in h["events"] or "*" in h["events"])]
         for h in hooks:
-            asyncio.ensure_future(self._deliver(h, event, data))
+            if self._pending >= MAX_PENDING:
+                log.warning("webhook backlog full, dropping %s for %s", event, h["url"])
+                continue
+            self._pending += 1
+            asyncio.ensure_future(self._deliver_tracked(h, event, data))
+
+    async def _deliver_tracked(self, hook: dict, event: str, data: dict) -> None:
+        try:
+            await self._deliver(hook, event, data)
+        finally:
+            self._pending -= 1
 
     async def _deliver(self, hook: dict, event: str, data: dict) -> None:
         payload = json.dumps({"event": event, "data": data}, default=str).encode()

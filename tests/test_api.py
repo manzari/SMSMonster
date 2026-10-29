@@ -61,7 +61,7 @@ def test_send_validation(client):
     assert client.post("/api/messages", json={"text": "x"}).status_code == 400
     assert client.post("/api/messages", json={"to": "+1", "text": ""}).status_code == 400
     assert client.post("/api/messages", json={"to": "+1", "text": "x", "modem_id": "nope"}).status_code == 404
-    assert client.post("/api/messages", content=b"not json").status_code == 400
+    assert client.post("/api/messages", content=b"not json", headers={"Content-Type": "application/json"}).status_code == 400
 
 
 def test_receive_and_sse(client, fake):
@@ -125,6 +125,7 @@ def test_auth(settings, db, bus, fake):
 
 def test_ingress_bypass(settings, db, bus, fake):
     settings.api_token = "secret-token"
+    settings.trust_ingress = True
     manager = ModemManager(settings, db, bus, open_port=opener(fake), discover=lambda: [])
     app = create_app(settings, db, bus, manager)
     with TestClient(app, client=("172.30.32.2", 1234)) as c:

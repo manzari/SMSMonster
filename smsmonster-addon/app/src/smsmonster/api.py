@@ -5,7 +5,9 @@ import asyncio
 import contextlib
 import json
 import logging
+import math
 import os
+import re
 import secrets
 
 from sse_starlette.sse import EventSourceResponse
@@ -29,6 +31,11 @@ from .webhooks import WEBHOOK_EVENTS, WebhookDispatcher
 log = logging.getLogger(__name__)
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 INGRESS_HOSTS = ("172.30.32.2",)
+MAX_BODY_BYTES = 64 * 1024
+NUMBER_RE = re.compile(r"\+?[0-9]{1,20}")
+USSD_RE = re.compile(r"[0-9*#+]{1,32}")
+CTRL_RE = re.compile(r"[\x00-\x1f\x7f]")
+CSP = "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'"
 
 
 class AppContext:
@@ -48,25 +55,94 @@ class AuthMiddleware(BaseHTTPMiddleware):
         request.state.authorized = not token or self._authorized(request, token, ctx.settings.trust_ingress)
         if not request.state.authorized and request.url.path.startswith("/api/") and request.url.path != "/api/health":
             return JSONResponse({"error": "unauthorized"}, status_code=401)
-        return await call_next(request)
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        if request.url.path.startswith("/api/"):
+            response.headers["Cache-Control"] = "no-store"
+        elif response.headers.get("content-type", "").startswith("text/html"):
+            response.headers["Content-Security-Policy"] = CSP
+        return response
 
     @staticmethod
     def _authorized(request: Request, token: str, trust_ingress: bool) -> bool:
+        # request.client is the real TCP peer (uvicorn runs without proxy_headers), so it cannot be spoofed.
         if trust_ingress and request.client and request.client.host in INGRESS_HOSTS and request.headers.get("x-ingress-path"):
             return True
         auth = request.headers.get("authorization", "")
-        candidate = auth[7:] if auth.lower().startswith("bearer ") else request.headers.get("x-api-key") or request.query_params.get("token", "")
-        return bool(candidate) and secrets.compare_digest(candidate, token)
+        if auth.lower().startswith("bearer "):
+            candidate = auth[7:].strip()
+        elif request.headers.get("x-api-key"):
+            candidate = request.headers["x-api-key"]
+        elif request.url.path == "/api/events":  # EventSource cannot set headers
+            candidate = request.query_params.get("token", "")
+        else:
+            candidate = ""
+        return bool(candidate) and secrets.compare_digest(candidate.encode("utf-8", "replace"), token.encode("utf-8"))
+
+
+def _utf8_clean(obj) -> bool:
+    """Lone surrogates (\\ud800 escapes) cannot be stored or sent."""
+    if isinstance(obj, str):
+        try:
+            obj.encode("utf-8")
+        except UnicodeEncodeError:
+            return False
+        return True
+    if isinstance(obj, dict):
+        return all(_utf8_clean(k) and _utf8_clean(v) for k, v in obj.items())
+    if isinstance(obj, list):
+        return all(_utf8_clean(v) for v in obj)
+    return True
 
 
 async def _json_body(request: Request) -> dict:
+    # Requiring the JSON content type makes browser requests non-simple, which blocks cross-site POSTs (CSRF).
+    if request.headers.get("content-type", "").split(";")[0].strip().lower() != "application/json":
+        raise HTTPException(415, "Content-Type must be application/json")
     try:
-        body = await request.json()
-    except (json.JSONDecodeError, ValueError):
+        if int(request.headers.get("content-length") or 0) > MAX_BODY_BYTES:
+            raise HTTPException(413, "body too large")
+    except ValueError:
+        raise HTTPException(400, "invalid Content-Length")
+    body = b""
+    async for chunk in request.stream():
+        body += chunk
+        if len(body) > MAX_BODY_BYTES:
+            raise HTTPException(413, "body too large")
+    try:
+        data = json.loads(body)
+    except ValueError:
         raise HTTPException(400, "invalid JSON body")
-    if not isinstance(body, dict):
+    if not isinstance(data, dict):
         raise HTTPException(400, "JSON object expected")
-    return body
+    if not _utf8_clean(data):
+        raise HTTPException(400, "invalid unicode in body")
+    return data
+
+
+def _number(raw: str) -> str:
+    n = raw.strip().replace(" ", "").replace("-", "")
+    if not NUMBER_RE.fullmatch(n):
+        raise HTTPException(400, "invalid number (digits with optional leading +)")
+    return n
+
+
+def _timeout(val, lo: float = 1.0, hi: float = 60.0) -> float:
+    try:
+        t = float(val)
+    except (TypeError, ValueError):
+        raise HTTPException(400, "invalid timeout")
+    if not math.isfinite(t):
+        raise HTTPException(400, "invalid timeout")
+    return min(max(t, lo), hi)
+
+
+def _webhook_url(raw) -> str:
+    url = str(raw).strip()
+    if not url.startswith(("http://", "https://")) or len(url) > 2048:
+        raise HTTPException(400, "url must be http(s)")
+    return url
 
 
 def _require(body: dict, key: str, typ=str) -> object:
@@ -138,9 +214,9 @@ async def modem_at(request: Request) -> Response:
     w = _worker(request)
     body = await _json_body(request)
     cmd = str(_require(body, "command")).strip()
-    if not cmd.upper().startswith("AT"):
-        raise HTTPException(400, "command must start with AT")
-    timeout = float(body.get("timeout", 10))
+    if not cmd.upper().startswith("AT") or len(cmd) > 512 or CTRL_RE.search(cmd):
+        raise HTTPException(400, "command must be a single AT command")
+    timeout = _timeout(body.get("timeout", 10))
     lines = await _run_job(w, lambda m: m.job_at(cmd, timeout=timeout), timeout + 15, need_ready=False)
     return JSONResponse({"command": cmd, "response": lines})
 
@@ -149,6 +225,8 @@ async def modem_ussd(request: Request) -> Response:
     w = _worker(request)
     body = await _json_body(request)
     code = str(_require(body, "code")).strip()
+    if not USSD_RE.fullmatch(code):
+        raise HTTPException(400, "invalid USSD code")
     res = await _run_job(w, lambda m: m.job_ussd(code), 60)
     return JSONResponse(res)
 
@@ -191,7 +269,7 @@ async def delete_message(request: Request) -> Response:
 async def send_message(request: Request) -> Response:
     ctx = _ctx(request)
     body = await _json_body(request)
-    to = str(_require(body, "to") if "to" in body else _require(body, "number")).strip()
+    to = _number(str(_require(body, "to") if "to" in body else _require(body, "number")))
     text = str(_require(body, "text"))
     if len(text) > 1530:
         raise HTTPException(400, "text too long (max 1530 characters)")
@@ -234,9 +312,7 @@ def _validate_events(events) -> list[str]:
 
 async def add_webhook(request: Request) -> Response:
     body = await _json_body(request)
-    url = str(_require(body, "url")).strip()
-    if not url.startswith(("http://", "https://")):
-        raise HTTPException(400, "url must be http(s)")
+    url = _webhook_url(_require(body, "url"))
     events = _validate_events(body.get("events", ["message.received"]))
     hook = await asyncio.to_thread(_ctx(request).db.add_webhook, url, events, body.get("secret") or None, bool(body.get("enabled", True)))
     return JSONResponse(hook, status_code=201)
@@ -246,7 +322,7 @@ async def patch_webhook(request: Request) -> Response:
     body = await _json_body(request)
     fields = {}
     if "url" in body:
-        fields["url"] = str(body["url"]).strip()
+        fields["url"] = _webhook_url(body["url"])
     if "events" in body:
         fields["events"] = _validate_events(body["events"])
     if "secret" in body:
@@ -314,6 +390,8 @@ def create_app(settings: Settings, db: Database, bus: EventBus, manager: ModemMa
         bus.add_listener(ctx.webhooks)
         manager.start()
         log.info("SMS Monster %s listening on %s:%s", __version__, settings.host, settings.port)
+        if not settings.api_token:
+            log.warning("SMSMONSTER_API_TOKEN is not set: anyone who can reach port %s can read and send SMS", settings.port)
         try:
             yield
         finally:
