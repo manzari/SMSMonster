@@ -133,3 +133,8 @@ def test_ingress_bypass(settings, db, bus, fake):
     app = create_app(settings, db, bus, ModemManager(settings, db, bus, open_port=opener(fake), discover=lambda: []))
     with TestClient(app, client=("10.0.0.5", 1234)) as c:
         assert c.get("/api/modems", headers={"X-Ingress-Path": "/api/hassio_ingress/abc"}).status_code == 401
+
+
+def test_discover_keeps_url_devices(tmp_path):
+    from smsmonster.manager import discover_devices
+    assert discover_devices(["socket://host:5555", str(tmp_path / "missing")]) == ["socket://host:5555"]

@@ -198,6 +198,12 @@ def test_no_sim(settings, db, bus):
     w.start()
     try:
         wait_for(lambda: w.state.status == "no_sim")
+        assert w.port_open
+        assert w.submit(lambda m: m.job_at("AT+CPIN?")).result(5) == ["CME error 10: SIM not inserted"]
+        fake.sim = "READY"  # SIM inserted: picked up on the next periodic check
+        w._next_init = 0
+        wait_for(lambda: w.ready)
+        assert fake.opened == 1
     finally:
         w.stop()
         w.join(3)
@@ -226,6 +232,20 @@ def test_jobs_at_and_ussd(settings, db, bus):
         assert res["text"] == "Your balance is 5.00 EUR" and res["status"] == 0
         fake.ussd_reply = '+CUSD: 0,"00480069",72'
         assert w.submit(lambda m: m.job_ussd("*100#")).result(5)["text"] == "Hi"
+    finally:
+        w.stop()
+        w.join(3)
+
+
+def test_reset_job_reinitialises(settings, db, bus):
+    fake = FakeSim800()
+    w = start_worker(fake, settings, db, bus)
+    try:
+        w.submit(lambda m: m.job_reset()).result(5)
+        assert "AT+CFUN=1,1" in fake.commands
+        assert w.state.status == "connecting"
+        w._next_init = 0
+        wait_for(lambda: w.ready)
     finally:
         w.stop()
         w.join(3)

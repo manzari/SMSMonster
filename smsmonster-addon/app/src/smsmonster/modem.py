@@ -42,6 +42,10 @@ class ModemGone(ModemError):
     """Serial port went away."""
 
 
+class SimNotReady(ModemError):
+    """SIM missing/locked: port stays open, init is retried periodically."""
+
+
 @dataclass
 class ModemState:
     id: str
@@ -67,6 +71,8 @@ class ModemState:
 
 
 def _short_device(device: str) -> str:
+    if "://" in device:
+        return device.split("://", 1)[1].rstrip("/")
     return os.path.basename(device.rstrip("/"))
 
 
@@ -91,6 +97,8 @@ class ModemWorker(threading.Thread):
         self._next_send = 0.0
         self._retry_delay = 2.0
         self._identified = False
+        self._modem_ready = False
+        self._next_init = 0.0
         self._last_cusd: str | None = None
         self._reconnect = False
         self._last_call: tuple[str, float] | None = None
@@ -116,14 +124,24 @@ class ModemWorker(threading.Thread):
     def ready(self) -> bool:
         return self.state.status == "ready"
 
+    @property
+    def port_open(self) -> bool:
+        return self._port is not None
+
     # ---------------- thread main ----------------
     def run(self) -> None:
         log.info("[%s] worker started", self.state.id)
         while not self._stop_evt.is_set():
             try:
                 if self._port is None:
-                    self._connect_and_init()
+                    self._connect()
                     self._retry_delay = 2.0
+                if not self._modem_ready and time.monotonic() >= self._next_init:
+                    try:
+                        self._init_modem()
+                    except SimNotReady as e:
+                        self._set_error(str(e))
+                        self._next_init = time.monotonic() + 10
                 self._loop_once()
             except ModemGone as e:
                 self._disconnect(f"device gone: {e}")
@@ -149,6 +167,18 @@ class ModemWorker(threading.Thread):
             self._handle_urc(line)
         while self._pending_read:
             self._read_and_delete(self._pending_read.pop(0))
+        try:
+            fn, fut = self._jobs.get_nowait()
+        except queue.Empty:
+            pass
+        else:
+            if fut.set_running_or_notify_cancel():
+                try:
+                    fut.set_result(fn(self))
+                except Exception as e:
+                    fut.set_exception(e)
+        if not self._modem_ready:
+            return
         now = time.monotonic()
         if now >= self._next_status:
             self._next_status = now + self.settings.status_interval
@@ -157,22 +187,11 @@ class ModemWorker(threading.Thread):
             self._next_sweep = now + self.settings.sweep_interval
             self._sweep_storage()
             self._flush_expired_parts()
-        try:
-            fn, fut = self._jobs.get_nowait()
-        except queue.Empty:
-            pass
-        else:
-            if not fut.set_running_or_notify_cancel():
-                return
-            try:
-                fut.set_result(fn(self))
-            except Exception as e:
-                fut.set_exception(e)
         if self.ready and self.state.registration in ("home", "roaming") and now >= self._next_send:
             self._send_next()
 
     # ---------------- connection ----------------
-    def _connect_and_init(self) -> None:
+    def _connect(self) -> None:
         self._set_status("connecting")
         for baud in self.settings.baudrates:
             try:
@@ -188,8 +207,8 @@ class ModemWorker(threading.Thread):
             self._close_port()
         else:
             raise ModemError("no AT response on any baudrate")
-        self._set_status("initializing")
-        self._init_modem()
+        self._modem_ready = False
+        self._next_init = 0
 
     def _probe(self) -> bool:
         for _ in range(3):
@@ -206,6 +225,7 @@ class ModemWorker(threading.Thread):
 
     def _init_modem(self) -> None:
         st = self.state
+        self._set_status("initializing")
         self._command("ATE0")
         self._command("AT+CMEE=1")
         st.model = self._first_line(self._command("AT+CGMM"))
@@ -234,6 +254,7 @@ class ModemWorker(threading.Thread):
             self._identified = True
         st.connected_at = now_iso()
         st.last_error = None
+        self._modem_ready = True
         self._set_status("ready")
         self._next_status = 0
         self._next_sweep = time.monotonic() + 3
@@ -252,13 +273,13 @@ class ModemWorker(threading.Thread):
                     time.sleep(2)
                     continue
                 self._set_status("sim_pin_required")
-                raise ModemError("SIM PIN required but SMSMONSTER_SIM_PIN not set")
+                raise SimNotReady("SIM PIN required but SMSMONSTER_SIM_PIN not set")
             if cpin == "SIM PUK":
                 self._set_status("sim_locked")
-                raise ModemError("SIM is PUK locked")
+                raise SimNotReady("SIM is PUK locked")
             if err and ("10" in err or "not inserted" in err.lower()):
                 self._set_status("no_sim")
-                raise ModemError("SIM not inserted")
+                raise SimNotReady("SIM not inserted (check that the SIM is seated, then Restart)")
             if time.monotonic() > deadline:
                 self._set_status("error")
                 raise ModemError(f"SIM not ready: {cpin or err}")
@@ -266,6 +287,7 @@ class ModemWorker(threading.Thread):
 
     def _disconnect(self, reason: str, publish: bool = True) -> None:
         self._close_port()
+        self._modem_ready = False
         if self.state.status != "disconnected":
             log.warning("[%s] disconnected: %s", self.state.id, reason)
         if self.state.status not in ("sim_pin_required", "sim_locked", "no_sim", "error"):
@@ -500,6 +522,13 @@ class ModemWorker(threading.Thread):
         lines, err = self._command(command, timeout=timeout, ok_on_error=True, return_error=True)
         return lines + ([err] if err else [])
 
+    def job_reset(self) -> None:
+        """Reboot the modem (AT+CFUN=1,1) and re-initialise afterwards; needed after inserting a SIM."""
+        self._command("AT+CFUN=1,1", timeout=10, ok_on_error=True)
+        self._modem_ready = False
+        self._next_init = time.monotonic() + 8
+        self._set_status("connecting")
+
     def job_ussd(self, code: str, timeout: float = 30) -> dict:
         self._last_cusd = None
         self._command(f'AT+CUSD=1,"{code}",15', timeout=10)
@@ -633,6 +662,10 @@ def _decode_ussd(text: str, dcs: int) -> str:
 def _open_serial(device: str, baudrate: int):
     import serial  # pyserial, imported lazily so tests run without hardware
 
-    port = serial.Serial(device, baudrate=baudrate, timeout=0.1, write_timeout=2, rtscts=False, dsrdtr=False)
-    port.reset_input_buffer()
+    kwargs = dict(baudrate=baudrate, timeout=0.1, write_timeout=2, rtscts=False, dsrdtr=False)
+    port = serial.serial_for_url(device, **kwargs) if "://" in device else serial.Serial(device, **kwargs)
+    try:
+        port.reset_input_buffer()
+    except Exception:
+        pass
     return port

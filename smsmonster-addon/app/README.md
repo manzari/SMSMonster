@@ -35,7 +35,7 @@ Data (SQLite) lives in `./data`.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `SMSMONSTER_DEVICES` | `auto` | `auto` = scan `/dev/serial/by-id`, `/dev/ttyUSB*`, `/dev/ttyACM*`; or comma separated paths |
+| `SMSMONSTER_DEVICES` | `auto` | `auto` = scan `/dev/serial/by-id`, `/dev/ttyUSB*`, `/dev/ttyACM*`; or comma separated paths / pyserial URLs (`socket://host:5555`, `rfc2217://host:port`) |
 | `SMSMONSTER_BAUDRATES` | `115200,9600,57600,38400` | Baud rates to probe |
 | `SMSMONSTER_SIM_PIN` | | PIN to enter when the SIM asks for it |
 | `SMSMONSTER_API_TOKEN` | | If set, `/api/*` needs `Authorization: Bearer <token>` (or `X-API-Key`) |
@@ -50,6 +50,16 @@ Data (SQLite) lives in `./data`.
 | `SMSMONSTER_SWEEP_INTERVAL` | `120` | Seconds between SIM storage sweeps (catches missed notifications) |
 | `SMSMONSTER_PART_TIMEOUT` | `600` | Seconds to wait for missing parts of a long SMS before storing it incomplete |
 | `SMSMONSTER_TRUST_INGRESS` | `true` | Let Home Assistant Ingress requests bypass the API token |
+
+### Modem on another machine (or Docker Desktop)
+
+Docker Desktop runs containers in a VM and cannot pass USB serial devices through. Bridge the port over TCP on the
+machine that owns the modem and point SMS Monster at it:
+
+```sh
+socat TCP-LISTEN:5555,bind=127.0.0.1,reuseaddr,fork,max-children=1 /dev/ttyUSB0,b115200,raw,echo=0
+SMSMONSTER_DEVICES=socket://host.docker.internal:5555   # or ser2net / rfc2217://host:port
+```
 
 ## Home Assistant add-on
 

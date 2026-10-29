@@ -147,7 +147,7 @@ class FakeSim800:
         elif u.startswith("AT+CUSD="):
             self._out("OK")
             self._out(self.ussd_reply)
-        elif u.startswith(("AT+CMEE", "AT+CMGF", "AT+CSCS", "AT+CNMI", "AT+CLIP", "AT+CSMP", "ATH")):
+        elif u.startswith(("AT+CMEE", "AT+CMGF", "AT+CSCS", "AT+CNMI", "AT+CLIP", "AT+CSMP", "ATH", "AT+CFUN")):
             self._out("OK")
         else:
             self._out("ERROR")
