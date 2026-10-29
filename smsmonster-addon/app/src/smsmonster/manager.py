@@ -17,7 +17,7 @@ log = logging.getLogger(__name__)
 
 def discover_devices(explicit: list[str] | None) -> list[str]:
     if explicit:
-        return [d for d in explicit if os.path.exists(d)]
+        return [d for d in explicit if "://" in d or os.path.exists(d)]
     by_id = sorted(glob.glob("/dev/serial/by-id/*"))
     found: dict[str, str] = {}
     for d in by_id:
@@ -72,7 +72,7 @@ class ModemManager:
                     w.start()
             for dev in list(self.workers):
                 w = self.workers[dev]
-                if dev not in devices and not os.path.exists(dev) and w.state.status == "disconnected":
+                if dev not in devices and "://" not in dev and not os.path.exists(dev) and w.state.status == "disconnected":
                     log.info("device %s removed, stopping worker", dev)
                     w.stop()
                     del self.workers[dev]

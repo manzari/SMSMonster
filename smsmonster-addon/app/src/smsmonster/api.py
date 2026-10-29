@@ -121,8 +121,8 @@ async def patch_modem(request: Request) -> Response:
     return JSONResponse(w.to_dict())
 
 
-async def _run_job(w, fn, timeout: float):
-    if not w.ready:
+async def _run_job(w, fn, timeout: float, need_ready: bool = True):
+    if (need_ready and not w.ready) or not w.port_open:
         raise HTTPException(409, f"modem not ready (status: {w.state.status})")
     fut = w.submit(fn)
     try:
@@ -141,7 +141,7 @@ async def modem_at(request: Request) -> Response:
     if not cmd.upper().startswith("AT"):
         raise HTTPException(400, "command must start with AT")
     timeout = float(body.get("timeout", 10))
-    lines = await _run_job(w, lambda m: m.job_at(cmd, timeout=timeout), timeout + 15)
+    lines = await _run_job(w, lambda m: m.job_at(cmd, timeout=timeout), timeout + 15, need_ready=False)
     return JSONResponse({"command": cmd, "response": lines})
 
 
@@ -155,7 +155,10 @@ async def modem_ussd(request: Request) -> Response:
 
 async def modem_restart(request: Request) -> Response:
     w = _worker(request)
-    w.request_reconnect()
+    if w.port_open:
+        await _run_job(w, lambda m: m.job_reset(), 20, need_ready=False)
+    else:
+        w.request_reconnect()
     return JSONResponse({"ok": True})
 
 
