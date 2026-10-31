@@ -5,12 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <title>SMS Monster</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%233b3fe0'/%3E%3Cpath d='M7 22V10h3l6 7 6-7h3v12h-3v-7l-6 7-6-7v7z' fill='%23fff'/%3E%3C/svg%3E">
+<link rel="icon" type="image/svg+xml" href="static/icon.svg">
+<link rel="apple-touch-icon" href="static/apple-touch-icon.png">
 <link rel="stylesheet" href="static/style.css">
 </head>
 <body>
 <header class="top">
-  <a class="brand" href="#modems"><span class="logo">M</span><span>SMS Monster</span></a>
+  <a class="brand" href="#messages"><img class="logo" src="static/icon.svg" alt="" width="28" height="28"><span>SMS Monster</span></a>
   <nav id="nav" aria-label="Views">
     <a href="#modems" data-view="modems">Modems</a>
     <a href="#messages" data-view="messages">Messages</a>
@@ -47,6 +48,11 @@
       <h2>No modems connected</h2>
       <p>Plug in a SIM800C USB modem with a SIM card inserted. It appears here within a few seconds.</p>
     </div>
+    <section id="ignored" class="ignored" hidden>
+      <h2>Ignored ports</h2>
+      <p class="muted">These serial ports are never opened. Restore one to scan it again.</p>
+      <ul id="ignored-list"></ul>
+    </section>
   </section>
 
   <section id="view-messages" class="view" hidden>
