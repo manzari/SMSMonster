@@ -10,6 +10,7 @@ Self-hosted SMS gateway for small in-network setups. Plug one or more **SIM800C*
 - per-modem status: signal, operator, registration, IMEI/ICCID, SIM PIN handling, USSD queries (prepaid balance), raw AT console
 - hot-plug: modems are discovered when connected and reconnected after a power dip; serial ports that are not modems can be ignored from the UI
 - a **Home Assistant add-on** (Ingress UI, `uart` access), published from `addon/` to a separate add-on repository
+- a built-in **Home Assistant integration**: modems, counters and the latest messages appear as sensors, every SMS/call fires an HA event (automatic in the add-on, or point any instance at HA with a long-lived token)
 
 Everything is pure Python (no compiled wheels) so it builds on armv7/arm64/amd64 alike.
 
@@ -69,6 +70,9 @@ Data (SQLite) lives in `./data`.
 | `SMSMONSTER_SWEEP_INTERVAL` | `120` | Seconds between SIM storage sweeps (catches missed notifications) |
 | `SMSMONSTER_PART_TIMEOUT` | `600` | Seconds to wait for missing parts of a long SMS before storing it incomplete |
 | `SMSMONSTER_MAX_INCOMING_PER_MIN` | `120` | Per-modem cap on stored incoming SMS/calls per minute; excess stays on the SIM until a later sweep (`0` = unlimited) |
+| `SMSMONSTER_HA_URL` / `SMSMONSTER_HA_TOKEN` | | Push modems and messages into a Home Assistant instance at this URL (`http://homeassistant.local:8123`) using a long-lived access token. The add-on does this automatically through the Supervisor |
+| `SMSMONSTER_HA_INTEGRATION` | `true` | Set to `false` to turn the Home Assistant integration off (also inside the add-on) |
+| `SMSMONSTER_HA_RESYNC_INTERVAL` | `60` | Seconds between full re-pushes of all entities (recovers after a Home Assistant restart) |
 | `SMSMONSTER_TRUST_INGRESS` | `false` | Let requests whose TCP peer is the Home Assistant Supervisor (`172.30.32.2`) bypass the API token. The add-on sets this; leave it off elsewhere |
 
 ### Modem on another machine (or Docker Desktop)
@@ -98,6 +102,38 @@ add-on repository checked out next to this one (`../SMSMonster-addon`, override 
 Home Assistant then offers the update on its next store refresh.
 
 Options, `rest_command` and webhook-trigger examples are in the add-on repository's `DOCS.md`.
+
+## Home Assistant integration
+
+Inside the add-on this is automatic (the Supervisor hands the add-on a token and `homeassistant_api: true` grants it
+access to the Core API). Standalone, set `SMSMONSTER_HA_URL` and `SMSMONSTER_HA_TOKEN` (*Profile → Security →
+Long-lived access tokens*). SMS Monster then keeps these entities up to date through the REST API, re-pushing
+everything every `SMSMONSTER_HA_RESYNC_INTERVAL` seconds so they survive a Home Assistant restart:
+
+| Entity | State | Attributes |
+|---|---|---|
+| `sensor.sms_monster_modem_<imei>` | `ready`, `connecting`, `disconnected`, `sim_pin_required`, … | operator, registration, signal, IMEI/ICCID/IMSI, model, firmware, name, phone_number, last_error, counters |
+| `sensor.sms_monster_modem_<imei>_signal` | signal strength in % | rssi, signal_dbm |
+| `sensor.sms_monster_modems` | number of modems | `ready` count, list of modems |
+| `sensor.sms_monster_received` / `_sent` / `_failed` / `_queued` | message counters | |
+| `sensor.sms_monster_last_received` / `_last_sent` / `_last_failed` / `_last_call` | timestamp of the latest one | id, number, text, modem_id, status, error |
+
+Entities of unplugged or ignored modems are removed. In addition every message fires an event with the full message
+as event data: `smsmonster_message_received`, `smsmonster_message_sent`, `smsmonster_message_failed`,
+`smsmonster_call_received`, `smsmonster_modem_removed`. Example automation:
+
+```yaml
+trigger:
+  - platform: event
+    event_type: smsmonster_message_received
+action:
+  - service: notify.mobile_app_phone
+    data:
+      title: "SMS from {{ trigger.event.data.number }}"
+      message: "{{ trigger.event.data.text }}"
+```
+
+Sending still goes through the REST API (`rest_command`, see the add-on `DOCS.md`); the HA REST API cannot register services.
 
 ## Security notes
 

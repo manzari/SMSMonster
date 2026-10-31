@@ -34,10 +34,25 @@ class Settings:
     delivery_reports: bool = field(default_factory=lambda: _bool("DELIVERY_REPORTS", False))
     part_timeout: float = field(default_factory=lambda: float(_env("PART_TIMEOUT", "600")))
     max_incoming_per_min: int = field(default_factory=lambda: int(_env("MAX_INCOMING_PER_MIN", "120")))
+    ha_integration: bool = field(default_factory=lambda: _bool("HA_INTEGRATION", True))
+    ha_url: str = field(default_factory=lambda: _env("HA_URL", ""))
+    ha_token: str = field(default_factory=lambda: _env("HA_TOKEN", ""))
+    ha_resync_interval: float = field(default_factory=lambda: float(_env("HA_RESYNC_INTERVAL", "60")))
+    supervisor_token: str = field(default_factory=lambda: os.environ.get("SUPERVISOR_TOKEN", ""))
 
     @property
     def db_path(self) -> str:
         return os.path.join(self.data_dir, "smsmonster.db")
+
+    def homeassistant(self) -> tuple[str, str] | None:
+        """(api url, token): explicit SMSMONSTER_HA_URL/TOKEN first, else the Supervisor proxy when running as an add-on."""
+        if not self.ha_integration:
+            return None
+        if self.ha_url and self.ha_token:
+            return self.ha_url, self.ha_token
+        if self.supervisor_token:
+            return "http://supervisor/core/api", self.supervisor_token
+        return None
 
     def device_list(self) -> list[str] | None:
         v = self.devices.strip()
