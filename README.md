@@ -1,4 +1,4 @@
-# SMS Monster
+<p align="center"><img src="docs/logo/logo.png" width="440" alt="SMS Monster"></p>
 
 Self-hosted SMS gateway for small in-network setups. Plug one or more **SIM800C** USB modems into a Raspberry Pi
 (or any Linux box), run one container, and you get:
@@ -8,7 +8,7 @@ Self-hosted SMS gateway for small in-network setups. Plug one or more **SIM800C*
 - webhooks for incoming SMS, sent/failed messages, incoming calls and modem status (HMAC signed)
 - full PDU mode: GSM-7 and Unicode (UCS-2), long/concatenated messages in both directions, alphanumeric senders
 - per-modem status: signal, operator, registration, IMEI/ICCID, SIM PIN handling, USSD queries (prepaid balance), raw AT console
-- hot-plug: modems are discovered when connected and reconnected after a power dip
+- hot-plug: modems are discovered when connected and reconnected after a power dip; serial ports that are not modems can be ignored from the UI
 - a **Home Assistant add-on** (Ingress UI, `uart` access), published from `addon/` to a separate add-on repository
 
 Everything is pure Python (no compiled wheels) so it builds on armv7/arm64/amd64 alike.
@@ -125,6 +125,8 @@ All endpoints return JSON. With a token configured send `Authorization: Bearer <
 | `POST /api/modems/{id}/at` | `{"command": "AT+CSQ"}` raw AT command |
 | `POST /api/modems/{id}/ussd` | `{"code": "*100#"}` USSD query |
 | `POST /api/modems/{id}/restart` | Re-open and re-initialise the modem |
+| `POST /api/modems/{id}/ignore` | Close the port and never scan it again (for serial devices that are not modems) |
+| `GET /api/ignored` · `DELETE /api/ignored?device=…` | List / restore ignored serial devices |
 | `POST /api/messages` (alias `/api/send`) | `{"to": "+4917…", "text": "…", "modem_id": "optional"}` → `202` queued message |
 | `GET /api/messages` | Filters: `direction=in|out`, `modem_id`, `number`, `status`, `kind=sms|call`, `search`, `before=<id>`, `limit` |
 | `GET/DELETE /api/messages/{id}` · `POST /api/messages/{id}/retry` | Single message |
