@@ -13,6 +13,25 @@ Self-hosted SMS gateway for small in-network setups. Plug one or more **SIM800C*
 
 Everything is pure Python (no compiled wheels) so it builds on armv7/arm64/amd64 alike.
 
+## Screenshots
+
+Taken from the built-in demo (`python tests/demo_server.py`, two simulated modems, no hardware).
+
+| Modems | Messages |
+|---|---|
+| ![Modem overview](docs/screenshots/modems.png) | ![Message list with filters](docs/screenshots/messages.png) |
+
+| Send | Webhooks |
+|---|---|
+| ![Send form with part counter](docs/screenshots/send.png) | ![Webhook management](docs/screenshots/webhooks.png) |
+
+| AT console | USSD query |
+|---|---|
+| ![Raw AT console per modem](docs/screenshots/at-console.png) | ![USSD balance query](docs/screenshots/ussd.png) |
+
+The UI follows the system colour scheme ([light mode](docs/screenshots/messages-light.png)) and works on phones
+([mobile view](docs/screenshots/mobile-modems.png)).
+
 ## Hardware notes
 
 - Each SIM800C module needs its own USB-serial converter (most breakouts have a CH340 or CP2102 on board).
