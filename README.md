@@ -9,7 +9,7 @@ Self-hosted SMS gateway for small in-network setups. Plug one or more **SIM800C*
 - full PDU mode: GSM-7 and Unicode (UCS-2), long/concatenated messages in both directions, alphanumeric senders
 - per-modem status: signal, operator, registration, IMEI/ICCID, SIM PIN handling, USSD queries (prepaid balance), raw AT console
 - hot-plug: modems are discovered when connected and reconnected after a power dip
-- a **Home Assistant add-on** (Ingress UI, `uart` access) in `smsmonster-addon/`
+- a **Home Assistant add-on** (Ingress UI, `uart` access), published from `addon/` to a separate add-on repository
 
 Everything is pure Python (no compiled wheels) so it builds on armv7/arm64/amd64 alike.
 
@@ -83,14 +83,21 @@ SMSMONSTER_DEVICES=socket://host.docker.internal:5555   # or ser2net / rfc2217:/
 
 ## Home Assistant add-on
 
-The add-on lives in `smsmonster-addon/` with `repository.yaml` at the repo root, so this repository can be added
-directly as an add-on repository: *Settings → Add-ons → Add-on store → ⋮ → Repositories*, paste the git URL,
-then install **SMS Monster**. Home Assistant builds the image locally (a few minutes on a Pi 4).
+The add-on is installed from the public add-on repository `https://git.hauptstadt.monster/manzari/SMSMonster-addon`:
+*Settings → Add-ons → Add-on store → ⋮ → Repositories*, paste that URL, then install **SMS Monster**.
+Home Assistant pulls a pre-built image, so no build happens on the device.
 
-The add-on folder carries a copy of the application under `smsmonster-addon/app/` so it builds self-contained.
-After changing the application run `scripts/sync-addon.sh` (bumps the add-on version from `pyproject.toml`).
+That repository only holds the add-on metadata (`config.yaml`, `DOCS.md`, `CHANGELOG.md`). The image itself is built
+from this repository (`addon/Dockerfile`, `addon/run.sh`, base images in `addon/build.yaml`) and pushed to the
+container registry on git.hauptstadt.monster as `manzari/{arch}-smsmonster:<version>`.
 
-Options, `rest_command` and webhook-trigger examples are in `smsmonster-addon/DOCS.md`.
+To release: bump `version` in `pyproject.toml`, commit, then run `scripts/release-addon.sh "what changed"`.
+It builds and pushes one image per architecture (needs `docker login git.hauptstadt.monster` once and buildx with
+QEMU for the arm targets), tags this repo `v<version>`, and commits the version bump plus changelog line to the
+add-on repository checked out next to this one (`../SMSMonster-addon`, override with `ADDON_REPO`).
+Home Assistant then offers the update on its next store refresh.
+
+Options, `rest_command` and webhook-trigger examples are in the add-on repository's `DOCS.md`.
 
 ## Security notes
 
