@@ -4,8 +4,9 @@ import pytest
 from starlette.testclient import TestClient
 
 from conftest import wait_for
-from fake_sim800 import FakeSim800, opener
+from fake_sim800 import DeadPort, FakeSim800, opener
 from smsmonster.api import create_app
+from smsmonster.db import Database
 from smsmonster.manager import ModemManager
 
 INCOMING = "07911326040000F0040B911346610089F60000208062917314080CC8F71D14969741F977FD07"
@@ -131,7 +132,8 @@ def test_ingress_bypass(settings, db, bus, fake):
     with TestClient(app, client=("172.30.32.2", 1234)) as c:
         assert c.get("/api/modems").status_code == 401
         assert c.get("/api/modems", headers={"X-Ingress-Path": "/api/hassio_ingress/abc"}).status_code == 200
-    app = create_app(settings, db, bus, ModemManager(settings, db, bus, open_port=opener(fake), discover=lambda: []))
+    db2 = Database(settings.db_path)  # the first app's lifespan closed `db`
+    app = create_app(settings, db2, bus, ModemManager(settings, db2, bus, open_port=opener(fake), discover=lambda: []))
     with TestClient(app, client=("10.0.0.5", 1234)) as c:
         assert c.get("/api/modems", headers={"X-Ingress-Path": "/api/hassio_ingress/abc"}).status_code == 401
 
@@ -139,3 +141,46 @@ def test_ingress_bypass(settings, db, bus, fake):
 def test_discover_keeps_url_devices(tmp_path):
     from smsmonster.manager import discover_devices
     assert discover_devices(["socket://host:5555", str(tmp_path / "missing")]) == ["socket://host:5555"]
+
+
+def test_ignore_and_restore_device(settings, db, bus, fake):
+    devices = ["/dev/fake0", "/dev/notamodem"]
+    open_port = lambda dev, baud: opener(fake)(dev, baud) if dev == "/dev/fake0" else DeadPort()  # noqa: E731
+    manager = ModemManager(settings, db, bus, open_port=open_port, discover=lambda: list(devices))
+    app = create_app(settings, db, bus, manager)
+    with TestClient(app) as c:
+        wait_for(lambda: len(c.get("/api/modems").json()) == 2)
+        r = c.post("/api/modems/notamodem/ignore")
+        assert r.status_code == 200 and r.json()["device"] == "/dev/notamodem"
+        assert [m["device"] for m in c.get("/api/modems").json()] == ["/dev/fake0"]
+        assert [d["device"] for d in c.get("/api/ignored").json()] == ["/dev/notamodem"]
+        assert c.post("/api/modems/notamodem/ignore").status_code == 404
+        manager.scan()
+        assert len(c.get("/api/modems").json()) == 1
+        assert db.list_ignored_devices()[0]["device"] == "/dev/notamodem"
+        assert c.delete("/api/ignored").status_code == 400
+        assert c.delete("/api/ignored?device=/dev/other").status_code == 404
+        assert c.delete("/api/ignored?device=/dev/notamodem").status_code == 204
+        wait_for(lambda: len(c.get("/api/modems").json()) == 2)
+        assert c.get("/api/ignored").json() == []
+
+
+def test_ignored_devices_survive_restart(settings, db, bus, fake):
+    db.ignore_device("/dev/notamodem")
+    manager = ModemManager(settings, db, bus, open_port=opener(fake), discover=lambda: ["/dev/fake0", "/dev/notamodem"])
+    manager.scan()
+    try:
+        assert [w.device for w in manager.list()] == ["/dev/fake0"]
+    finally:
+        manager.stop()
+
+
+def test_ntfy_webhook_crud(client):
+    r = client.post("/api/webhooks", json={"type": "ntfy", "url": "https://ntfy.sh/alerts", "events": ["message.received"], "secret": "tk_abc"})
+    assert r.status_code == 201 and r.json()["type"] == "ntfy"
+    wid = r.json()["id"]
+    assert client.post("/api/webhooks", json={"type": "pigeon", "url": "https://ntfy.sh/x"}).status_code == 400
+    assert client.patch(f"/api/webhooks/{wid}", json={"type": "pigeon"}).status_code == 400
+    listed = client.get("/api/webhooks").json()
+    assert listed["types"] == ["webhook", "ntfy"]
+    assert client.post("/api/webhooks", json={"url": "http://example.invalid/h"}).json()["type"] == "webhook"

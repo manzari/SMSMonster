@@ -21,7 +21,7 @@ function h(tag, attrs, ...kids) {
 
 const S = {
   auth: false, modems: new Map(), msgs: [], filter: 'all', hooks: [], hookEvents: [],
-  fresh: new Set(), open: new Set(), tracking: null, atHist: {}, more: false,
+  fresh: new Set(), open: new Set(), tracking: null, atHist: {}, more: false, ignored: [],
 };
 
 function toast(msg, err) {
@@ -91,7 +91,7 @@ function modemLabel(id) {
 const VIEWS = ['modems', 'messages', 'send', 'webhooks'];
 function route() {
   if (!$('view-token').hidden && S.auth && !getToken()) return;
-  const v = VIEWS.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'modems';
+  const v = VIEWS.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'messages';
   VIEWS.forEach((n) => { $('view-' + n).hidden = n !== v; });
   $('view-token').hidden = true;
   document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('on', a.dataset.view === v));
@@ -138,8 +138,13 @@ function modemCard(m) {
   };
   const row = (k, v) => (v ? [h('dt', {}, k), h('dd', {}, v)] : []);
   const c = m.counters || {};
+  const ignore = async () => {
+    if (!confirm('Ignore ' + (m.device || m.id) + '?\nThe port is closed and never scanned again until you restore it.')) return;
+    try { await api('modems/' + encodeURIComponent(m.id) + '/ignore', { method: 'POST' }); removeModem(m.id); loadIgnored(); toast('Port ignored'); } catch {}
+  };
   return h('article', { class: 'card', data: { id: m.id, s: m.status } },
-    h('div', { class: 'card-head' }, h('span', { class: 'dev' }, m.device || m.id), statusBadge(m.status)),
+    h('div', { class: 'card-head' }, h('span', { class: 'dev' }, m.device || m.id), statusBadge(m.status),
+      h('button', { class: 'ignore', title: 'Ignore this port (not a modem)', 'aria-label': 'Ignore this port', onclick: ignore }, '\u00d7')),
     h('div', { class: 'edit' }, field('name', 'Name', 'Modem name'), field('phone_number', 'Phone number', 'Phone number')),
     h('div', { class: 'sig' }, bars, m.operator || 'No operator', badge(m.registration || 'unknown', m.registration === 'home' || m.registration === 'roaming' ? 'b-ok' : m.registration === 'denied' ? 'b-bad' : '')),
     h('dl', {}, row('IMEI', m.imei), row('ICCID', m.iccid), row('Model', [m.model, m.firmware].filter(Boolean).join(' ')), row('Baud', m.baudrate), row('Last seen', m.last_seen && full(m.last_seen))),
@@ -182,6 +187,19 @@ async function loadModems() {
   S.modems.clear();
   list.forEach(upsertModem);
   afterModems();
+  loadIgnored().catch(() => {});
+}
+async function loadIgnored() {
+  S.ignored = await api('ignored', { quiet: true });
+  renderIgnored();
+}
+function renderIgnored() {
+  $('ignored').hidden = S.ignored.length === 0;
+  $('ignored-list').replaceChildren(...S.ignored.map((d) => h('li', {},
+    h('span', { class: 'dev' }, d.device),
+    h('button', { class: 'btn sm', onclick: async () => {
+      try { await api('ignored' + qs({ device: d.device }), { method: 'DELETE' }); toast('Port restored, scanning'); loadIgnored(); } catch {}
+    } }, 'Restore'))));
 }
 
 /* ---------- AT / USSD ---------- */
@@ -380,7 +398,8 @@ async function loadHooks() {
 function renderHooks() {
   $('hook-empty').hidden = S.hooks.length > 0;
   $('hook-list').replaceChildren(...S.hooks.map((w) => h('li', { class: 'hook' },
-    h('div', { class: 'u' }, w.url, h('div', { class: 'ev' }, (w.events || []).join(', ') + (w.secret ? ' - signed' : ''))),
+    h('div', { class: 'u' }, w.type === 'ntfy' ? h('span', { class: 'badge b-info' }, 'ntfy') : null, ' ' + w.url,
+      h('div', { class: 'ev' }, (w.events || []).join(', ') + (w.secret ? (w.type === 'ntfy' ? ' - authenticated' : ' - signed') : ''))),
     h('label', { class: 'switch' }, h('input', { type: 'checkbox', checked: !!w.enabled, onchange: async (e) => {
       try { Object.assign(w, await api('webhooks/' + w.id, { method: 'PATCH', body: { enabled: e.target.checked } })); } catch { e.target.checked = !e.target.checked; }
     } }), 'Enabled'),
@@ -390,11 +409,19 @@ function renderHooks() {
       try { await api('webhooks/' + w.id, { method: 'DELETE' }); S.hooks = S.hooks.filter((x) => x.id !== w.id); renderHooks(); } catch {}
     } }, 'Delete'))));
 }
+const HOOK_FORMS = {
+  webhook: { url: 'URL', ph: 'https://example.com/hook', secret: 'Secret (optional)' },
+  ntfy: { url: 'Topic URL', ph: 'https://ntfy.sh/your-topic', secret: 'Access token or user:password (optional)' },
+};
+$('h-type').addEventListener('change', () => {
+  const f = HOOK_FORMS[$('h-type').value] || HOOK_FORMS.webhook;
+  $('h-url-label').textContent = f.url; $('h-url').placeholder = f.ph; $('h-secret-label').textContent = f.secret;
+});
 $('hook-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const events = [...$('h-events').querySelectorAll('input:checked')].map((i) => i.value);
   if (!events.length) return toast('Select at least one event', true);
-  const body = { url: $('h-url').value.trim(), events, enabled: true };
+  const body = { type: $('h-type').value, url: $('h-url').value.trim(), events, enabled: true };
   if ($('h-secret').value) body.secret = $('h-secret').value;
   try {
     await api('webhooks', { method: 'POST', body });
@@ -421,6 +448,7 @@ function connect() {
   es.addEventListener('ping', () => setConn('on', 'live'));
   es.addEventListener('modem.updated', parse((m) => { upsertModem(m); refreshStats(); }));
   es.addEventListener('modem.removed', parse((d) => removeModem(d.id)));
+  for (const n of ['device.ignored', 'device.restored']) es.addEventListener(n, () => loadIgnored().catch(() => {}));
   for (const n of ['message.received', 'call.received']) es.addEventListener(n, parse((m) => onMessage(m, true)));
   for (const n of ['message.sent', 'message.failed', 'message.updated']) es.addEventListener(n, parse((m) => onMessage(m)));
   es.addEventListener('message.partial', parse((p) => toast('Receiving multipart SMS from ' + p.number + ' (' + p.seq + '/' + p.total + ')')));

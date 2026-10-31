@@ -12,6 +12,7 @@ from fake_sim800 import FakeSim800, opener
 from smsmonster import main as main_mod
 from smsmonster import pdu
 from smsmonster.api import create_app
+from smsmonster.db import Database
 from smsmonster.manager import ModemManager
 from smsmonster.modem import MAX_LINE_BYTES, MAX_PENDING_READS, ModemWorker, _log_safe
 from smsmonster.webhooks import MAX_PENDING, WebhookDispatcher
@@ -55,7 +56,7 @@ def test_ingress_peer_is_trusted_only_when_enabled(settings, db, bus):
         assert c.get("/api/messages", headers={"X-Ingress-Path": "/x"}).status_code == 200
         assert c.get("/api/messages").status_code == 401
     settings.trust_ingress = False
-    with make_client(settings, db, bus, FakeSim800(), client=("172.30.32.2", 4321)) as c:
+    with make_client(settings, Database(settings.db_path), bus, FakeSim800(), client=("172.30.32.2", 4321)) as c:
         assert c.get("/api/messages", headers={"X-Ingress-Path": "/x"}).status_code == 401
 
 
