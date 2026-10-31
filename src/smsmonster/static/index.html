@@ -85,13 +85,14 @@
   </section>
 
   <section id="view-webhooks" class="view" hidden>
-    <p class="muted note">Each event is posted as JSON <code>{"event": ..., "data": ...}</code>. When a secret is set, the header <code>X-SMSMonster-Signature</code> carries the sha256 HMAC of the body.</p>
+    <p class="muted note">Webhooks receive each event as JSON <code>{"event": ..., "data": ...}</code>; with a secret set, <code>X-SMSMonster-Signature</code> carries the sha256 HMAC of the body. ntfy targets get a readable push notification per event (title, text, tags).</p>
     <ul id="hook-list" class="hooks"></ul>
     <div id="hook-empty" class="empty" hidden><h2>No webhooks</h2><p>Add a URL below to get notified about incoming messages.</p></div>
     <form id="hook-form" class="panel">
       <h2>Add webhook</h2>
-      <label>URL<input id="h-url" type="url" placeholder="https://example.com/hook" required></label>
-      <label>Secret (optional)<input id="h-secret" type="text" autocomplete="off"></label>
+      <label>Type<select id="h-type"><option value="webhook">Webhook (JSON POST)</option><option value="ntfy">ntfy push notification</option></select></label>
+      <label><span id="h-url-label">URL</span><input id="h-url" type="url" placeholder="https://example.com/hook" required></label>
+      <label><span id="h-secret-label">Secret (optional)</span><input id="h-secret" type="text" autocomplete="off"></label>
       <fieldset><legend>Events</legend><div id="h-events" class="checks"></div></fieldset>
       <button class="btn primary">Add webhook</button>
     </form>
