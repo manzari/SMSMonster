@@ -5,7 +5,7 @@ Self-hosted SMS gateway for small in-network setups. Plug one or more **SIM800C*
 
 - a web UI to read, send and search SMS across all modems (live updates, no polling)
 - a JSON REST API with optional token auth
-- webhooks for incoming SMS, sent/failed messages, incoming calls and modem status (HMAC signed)
+- webhooks for incoming SMS, sent/failed messages, incoming calls and modem status (HMAC signed), or [ntfy](https://ntfy.sh) push notifications
 - full PDU mode: GSM-7 and Unicode (UCS-2), long/concatenated messages in both directions, alphanumeric senders
 - per-modem status: signal, operator, registration, IMEI/ICCID, SIM PIN handling, USSD queries (prepaid balance), raw AT console
 - hot-plug: modems are discovered when connected and reconnected after a power dip; serial ports that are not modems can be ignored from the UI
@@ -148,6 +148,18 @@ POST with body `{"event": "<name>", "data": {...}}`, header `X-SMSMonster-Event`
 `X-SMSMonster-Signature: sha256=<hex HMAC of the body>`. Events: `message.received`, `message.sent`,
 `message.failed`, `message.updated`, `call.received`, `modem.updated`, `modem.removed`, or `*`.
 Failed deliveries are retried 3 times.
+
+### ntfy
+
+Create a webhook with `"type": "ntfy"` and the topic URL as `url` (e.g. `https://ntfy.sh/my-sms`, or your own
+server). Each event becomes a push notification with a readable title and the message text; failures and removed
+modems are sent with high priority. The optional secret is sent as the ntfy access token (`tk_...`) or, when it
+contains a colon, as `user:password` basic auth.
+
+```sh
+curl -X POST http://pi:8080/api/webhooks -H 'Authorization: Bearer TOKEN' -H 'Content-Type: application/json' \
+  -d '{"type": "ntfy", "url": "https://ntfy.sh/my-sms", "events": ["message.received", "message.failed"]}'
+```
 
 ## Development
 
