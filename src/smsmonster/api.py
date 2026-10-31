@@ -26,7 +26,7 @@ from .db import Database
 from .events import EventBus
 from .manager import ModemManager
 from .modem import ModemError
-from .webhooks import WEBHOOK_EVENTS, WebhookDispatcher
+from .webhooks import WEBHOOK_EVENTS, WEBHOOK_TYPES, WebhookDispatcher
 
 log = logging.getLogger(__name__)
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
@@ -145,6 +145,12 @@ def _webhook_url(raw) -> str:
     return url
 
 
+def _webhook_type(raw) -> str:
+    if raw not in WEBHOOK_TYPES:
+        raise HTTPException(400, f"type must be one of {list(WEBHOOK_TYPES)}")
+    return raw
+
+
 def _require(body: dict, key: str, typ=str) -> object:
     val = body.get(key)
     if val is None or (typ is str and not str(val).strip()) or not isinstance(val, typ):
@@ -240,6 +246,25 @@ async def modem_restart(request: Request) -> Response:
     return JSONResponse({"ok": True})
 
 
+async def modem_ignore(request: Request) -> Response:
+    w = _worker(request)
+    await asyncio.to_thread(_ctx(request).manager.ignore, w)
+    return JSONResponse({"ok": True, "device": w.device})
+
+
+async def list_ignored(request: Request) -> Response:
+    return JSONResponse(await asyncio.to_thread(_ctx(request).manager.list_ignored))
+
+
+async def delete_ignored(request: Request) -> Response:
+    device = request.query_params.get("device", "").strip()
+    if not device:
+        raise HTTPException(400, "'device' query parameter is required")
+    if not await asyncio.to_thread(_ctx(request).manager.unignore, device):
+        raise HTTPException(404, "device is not ignored")
+    return Response(status_code=204)
+
+
 async def list_messages(request: Request) -> Response:
     q = request.query_params
     try:
@@ -298,7 +323,7 @@ async def retry_message(request: Request) -> Response:
 
 
 async def list_webhooks(request: Request) -> Response:
-    return JSONResponse({"webhooks": await asyncio.to_thread(_ctx(request).db.list_webhooks), "events": list(WEBHOOK_EVENTS)})
+    return JSONResponse({"webhooks": await asyncio.to_thread(_ctx(request).db.list_webhooks), "events": list(WEBHOOK_EVENTS), "types": list(WEBHOOK_TYPES)})
 
 
 def _validate_events(events) -> list[str]:
@@ -314,13 +339,16 @@ async def add_webhook(request: Request) -> Response:
     body = await _json_body(request)
     url = _webhook_url(_require(body, "url"))
     events = _validate_events(body.get("events", ["message.received"]))
-    hook = await asyncio.to_thread(_ctx(request).db.add_webhook, url, events, body.get("secret") or None, bool(body.get("enabled", True)))
+    typ = _webhook_type(body.get("type", "webhook"))
+    hook = await asyncio.to_thread(_ctx(request).db.add_webhook, url, events, body.get("secret") or None, bool(body.get("enabled", True)), typ)
     return JSONResponse(hook, status_code=201)
 
 
 async def patch_webhook(request: Request) -> Response:
     body = await _json_body(request)
     fields = {}
+    if "type" in body:
+        fields["type"] = _webhook_type(body["type"])
     if "url" in body:
         fields["url"] = _webhook_url(body["url"])
     if "events" in body:
@@ -409,6 +437,9 @@ def create_app(settings: Settings, db: Database, bus: EventBus, manager: ModemMa
         Route("/api/modems/{modem_id}/at", modem_at, methods=["POST"]),
         Route("/api/modems/{modem_id}/ussd", modem_ussd, methods=["POST"]),
         Route("/api/modems/{modem_id}/restart", modem_restart, methods=["POST"]),
+        Route("/api/modems/{modem_id}/ignore", modem_ignore, methods=["POST"]),
+        Route("/api/ignored", list_ignored),
+        Route("/api/ignored", delete_ignored, methods=["DELETE"]),
         Route("/api/messages", list_messages),
         Route("/api/messages", send_message, methods=["POST"]),
         Route("/api/send", send_message, methods=["POST"]),

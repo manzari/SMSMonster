@@ -39,8 +39,13 @@ CREATE TABLE IF NOT EXISTS sms_parts (
     text TEXT, received_at TEXT, created_at TEXT,
     PRIMARY KEY (modem_id, number, ref, seq)
 );
+CREATE TABLE IF NOT EXISTS ignored_devices (
+    device TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS webhooks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    type TEXT NOT NULL DEFAULT 'webhook',
     url TEXT NOT NULL,
     secret TEXT,
     events TEXT NOT NULL,
@@ -64,6 +69,12 @@ class Database:
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA foreign_keys=ON")
             self._conn.executescript(SCHEMA)
+            self._migrate()
+
+    def _migrate(self) -> None:
+        cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(webhooks)")}
+        if "type" not in cols:
+            self._conn.execute("ALTER TABLE webhooks ADD COLUMN type TEXT NOT NULL DEFAULT 'webhook'")
 
     def close(self) -> None:
         with self._lock:
@@ -104,6 +115,17 @@ class Database:
     def update_modem_settings(self, modem_id: str, name: str | None, phone_number: str | None) -> dict | None:
         self._exec("UPDATE modems SET name=?, phone_number=? WHERE id=?", (name, phone_number, modem_id))
         return self.get_modem(modem_id)
+
+    # ---- ignored serial devices ----
+    def list_ignored_devices(self) -> list[dict]:
+        return self._q("SELECT * FROM ignored_devices ORDER BY created_at")
+
+    def ignore_device(self, device: str) -> None:
+        self._exec("INSERT OR IGNORE INTO ignored_devices (device, created_at) VALUES (?, ?)", (device, now_iso()))
+
+    def unignore_device(self, device: str) -> bool:
+        with self._lock:
+            return self._conn.execute("DELETE FROM ignored_devices WHERE device=?", (device,)).rowcount > 0
 
     # ---- messages ----
     def insert_message(self, **m) -> dict:
@@ -209,9 +231,9 @@ class Database:
     def list_webhooks(self) -> list[dict]:
         return [self._wh(r) for r in self._q("SELECT * FROM webhooks ORDER BY id")]
 
-    def add_webhook(self, url: str, events: list[str], secret: str | None, enabled: bool = True) -> dict:
-        rid = self._exec("INSERT INTO webhooks (url, secret, events, enabled, created_at) VALUES (?,?,?,?,?)",
-                         (url, secret, json.dumps(events), 1 if enabled else 0, now_iso()))
+    def add_webhook(self, url: str, events: list[str], secret: str | None, enabled: bool = True, type: str = "webhook") -> dict:
+        rid = self._exec("INSERT INTO webhooks (type, url, secret, events, enabled, created_at) VALUES (?,?,?,?,?,?)",
+                         (type, url, secret, json.dumps(events), 1 if enabled else 0, now_iso()))
         return self._wh(self._one("SELECT * FROM webhooks WHERE id=?", (rid,)))  # type: ignore[arg-type]
 
     def update_webhook(self, wid: int, **fields) -> dict | None:
