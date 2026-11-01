@@ -24,6 +24,7 @@ from . import __version__
 from .config import Settings
 from .db import Database
 from .events import EventBus
+from .homeassistant import HomeAssistant
 from .manager import ModemManager
 from .modem import ModemError
 from .webhooks import WEBHOOK_EVENTS, WEBHOOK_TYPES, WebhookDispatcher
@@ -42,6 +43,7 @@ class AppContext:
     def __init__(self, settings: Settings, db: Database, bus: EventBus, manager: ModemManager) -> None:
         self.settings, self.db, self.bus, self.manager = settings, db, bus, manager
         self.webhooks = WebhookDispatcher(db)
+        self.ha: HomeAssistant | None = None
 
 
 def _ctx(request: Request) -> AppContext:
@@ -166,7 +168,8 @@ async def health(request: Request) -> Response:
         return JSONResponse({"status": "ok", "version": __version__, "auth": True})
     workers = ctx.manager.list()
     return JSONResponse({"status": "ok", "version": __version__, "modems": len(workers),
-                         "ready": sum(1 for w in workers if w.ready), "auth": bool(ctx.settings.api_token)})
+                         "ready": sum(1 for w in workers if w.ready), "auth": bool(ctx.settings.api_token),
+                         "home_assistant": ctx.ha.url if ctx.ha else None})
 
 
 async def stats(request: Request) -> Response:
@@ -409,13 +412,21 @@ async def http_exception(request: Request, exc: HTTPException) -> Response:
     return JSONResponse({"error": exc.detail}, status_code=exc.status_code)
 
 
-def create_app(settings: Settings, db: Database, bus: EventBus, manager: ModemManager) -> Starlette:
+def create_app(settings: Settings, db: Database, bus: EventBus, manager: ModemManager, ha_transport=None) -> Starlette:
     ctx = AppContext(settings, db, bus, manager)
 
     @contextlib.asynccontextmanager
     async def lifespan(app):
         bus.attach(asyncio.get_running_loop())
         bus.add_listener(ctx.webhooks)
+        ha = settings.homeassistant()
+        if ha:
+            ctx.ha = HomeAssistant(db, manager, ha[0], ha[1], settings.ha_resync_interval, transport=ha_transport)
+            bus.add_listener(ctx.ha)
+            await ctx.ha.start()
+            log.info("Home Assistant integration enabled (%s)", ctx.ha.url)
+        elif settings.ha_url or settings.ha_token:
+            log.warning("Home Assistant integration needs both SMSMONSTER_HA_URL and SMSMONSTER_HA_TOKEN")
         manager.start()
         log.info("SMS Monster %s listening on %s:%s", __version__, settings.host, settings.port)
         if not settings.api_token:
@@ -424,6 +435,8 @@ def create_app(settings: Settings, db: Database, bus: EventBus, manager: ModemMa
             yield
         finally:
             manager.stop()
+            if ctx.ha:
+                await ctx.ha.close()
             await ctx.webhooks.close()
             db.close()
 
