@@ -156,14 +156,13 @@ def test_send_failure_retries_then_fails(settings, db, bus):
     try:
         w._next_send = 0
         db.insert_message(direction="out", modem_id=None, number="+31641600986", text="hello", status="queued")
-        wait_for(lambda: db.list_messages(direction="out")[0]["attempts"] == 1)
-        first = db.list_messages(direction="out")[0]
+        first = wait_for(lambda: (lambda m: m if m["attempts"] == 1 and m["status"] != "sending" else None)(db.list_messages(direction="out")[0]))
         assert first["status"] == "queued" and "331" in first["error"]
         w._next_send = 0  # skip the retry backoff
         msg = wait_for(lambda: (lambda m: m if m["status"] == "failed" else None)(db.list_messages(direction="out")[0]))
         assert msg["attempts"] == 2
         assert "no network service" in msg["error"]
-        assert w.state.counters["failed"] == 1
+        wait_for(lambda: w.state.counters["failed"] == 1)
     finally:
         w.stop()
         w.join(3)

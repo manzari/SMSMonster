@@ -1,5 +1,5 @@
 # Build context is the repository root: docker build -f addon/Dockerfile .
-ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base-python:3.12-alpine3.20
+ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base-python:3.14-alpine3.24
 FROM ${BUILD_FROM}
 ARG BUILD_ARCH=amd64
 ARG BUILD_VERSION=dev

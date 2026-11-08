@@ -87,9 +87,12 @@ SMSMONSTER_DEVICES=socket://host.docker.internal:5555   # or ser2net / rfc2217:/
 
 ## Home Assistant add-on
 
-The add-on is installed from the public add-on repository `https://git.hauptstadt.monster/manzari/SMSMonster-addon`:
-*Settings → Add-ons → Add-on store → ⋮ → Repositories*, paste that URL, then install **SMS Monster**.
-Home Assistant pulls a pre-built image, so no build happens on the device.
+[![Add the SMS Monster add-on repository to your Home Assistant](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fmanzari%2FSMSMonster-addon)
+
+Click the button above, or add the repository by hand: *Settings → Apps → App store → ⋮ → Repositories*, paste
+`https://github.com/manzari/SMSMonster-addon`, then install **SMS Monster**. Home Assistant calls add-ons "apps" now.
+It pulls a pre-built image, so no build happens on the device. Images exist for 64-bit systems only (`aarch64`,
+`amd64`), matching what Home Assistant itself still supports.
 
 That repository only holds the add-on metadata (`config.yaml`, `DOCS.md`, `CHANGELOG.md`). The image itself is built
 from this repository (`addon/Dockerfile`, `addon/run.sh`, base images in `addon/build.yaml`) and pushed to the
@@ -123,11 +126,11 @@ as event data: `smsmonster_message_received`, `smsmonster_message_sent`, `smsmon
 `smsmonster_call_received`, `smsmonster_modem_removed`. Example automation:
 
 ```yaml
-trigger:
-  - platform: event
+triggers:
+  - trigger: event
     event_type: smsmonster_message_received
-action:
-  - service: notify.mobile_app_phone
+actions:
+  - action: notify.mobile_app_phone
     data:
       title: "SMS from {{ trigger.event.data.number }}"
       message: "{{ trigger.event.data.text }}"
@@ -217,3 +220,7 @@ Layout: `src/smsmonster/pdu.py` (PDU codec), `modem.py` (per-modem worker thread
 - MQTT publishing for a tighter Home Assistant integration
 - Other modems (SIM7600, Quectel) mostly need different init strings
 - Contacts / conversation view
+
+## License
+
+MIT, see [LICENSE](LICENSE). Bugs and ideas go to the [issue tracker](https://github.com/manzari/SMSMonster/issues).
